@@ -92,4 +92,5 @@ plt.legend()
 plt.tight_layout(pad=1)
 plt.margins(0)
 plt.axis('off')
+
 plt.show()
