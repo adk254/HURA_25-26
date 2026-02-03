@@ -1,0 +1,23 @@
+Epymorph Virtual Environment Cheat Sheet
+
+* = first time on a device and creating venv
+
+Step 1. Create Virtual Environment*
+
+	py -3.12 -m venv C:\PythonEnvs\EpymorphEnv
+
+Step 2. Activate VEnv
+
+	C:\PythonEnvs\EpymorphEnv\Scripts\activate.bat
+
+Step 3. Upgrade pip and Install Epymorph*
+
+	pip install --upgrade pip setuptools wheel pip install epymorph
+
+Step 4. Install Dependencies*
+
+	pip install -r "C:\Users\andre\OneDrive - Northern Arizona University\MyEpymorphProject\requirements.txt"
+
+Step 5. Deactivate When Done Working
+
+	"deactivate"
