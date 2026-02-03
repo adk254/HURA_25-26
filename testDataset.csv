@@ -1,0 +1,4 @@
+site_id,n_salamanders,initial_infected,lat,lon
+Pond_A,100,5,35.1,-113.5
+Pond_B,75,1,35.2,-113.6
+Pond_C,140,3,35.15,-113.55
