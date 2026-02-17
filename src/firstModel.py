@@ -9,6 +9,11 @@
 #   2. Chronic carrier    -> R_c   (compartment, can move)
 #   3. Cleared            -> R_a   (compartment, can move)
 #
+# Potential addition to make the biological assumptions more accurate:
+#   Maturation fate for S offspring:
+#   -> R_a (cleared adult, can move)
+#       - This could be added into the 
+#
 # Births: proportional to total adult population (R_a + R_c), with vertical transmission
 # Deaths: natural mortality out of every compartment
 
@@ -146,6 +151,10 @@ class SIR_v3(MultiStrataRUMEBuilder):
         p_clear = 1 - p_chronic - p_disease_death
 
         return [
+            # Potential addition of biological assumption that Susceptible offspring 
+            # can metamorphose without becoming infected
+            # edge(S, R_a, rate=mature_rate * S),
+
             # --- I offspring maturation (three fates) ---
             # fate 1: disease death on maturation
             edge(I, DEATH, rate=p_disease_death * mature_rate * I),
