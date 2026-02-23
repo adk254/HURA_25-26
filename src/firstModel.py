@@ -29,6 +29,9 @@ from sympy import Max
 # make movement, beta, maturation, birth, winter death functions of time 
 #       use class system as seen in vignette 4 - time-variant beta
 
+# breeding occurs at the beginning of the season
+# migration occurs before the season
+
 # ----------------------
 # Load custom pond data
 # ----------------------
@@ -39,16 +42,26 @@ df = pd.read_csv(test_data_path)
 site_ids = df["site_id"].astype(str).tolist()
 scope = CustomScope(site_ids)
 
+# total_pop and adult_pop are static ints created initially.
 total_pop = np.array(df["n_salamanders"].tolist(), dtype=int)
 
 seed_location_index = 2
 seed_size = int(df.loc[seed_location_index, "initial_infected"])
 
-time = TimeFrame.of("2020-01-01", duration_days=200)
+# one year timeframe
+time = TimeFrame.of("2020-01-01", duration_days=365)
 
 adult_frac = 0.40
 adult_pop = np.floor(total_pop * adult_frac).astype(int)
 offspring_pop = (total_pop - adult_pop).astype(int)
+
+# -------------------------
+# Variables for Seasonality
+# -------------------------
+
+# season start and end variables
+season_start = 105 # April 15
+season_end = 288 # October 15
 
 # --------------------------------
 # Offspring IPM: S, I + deaths
@@ -64,11 +77,13 @@ class OffspringSI(CompartmentModel):
                      comment="offspring transmission rate"),
         AttributeDef("death_rate", type=float, shape=Shapes.TxN,
                      comment="offspring natural mortality rate"),
+        AttributeDef("disease_death_rate", type=float, shape=Shapes.TxN,
+                     comment="disease-induced death rate during season")
     ]
 
     def edges(self, symbols: ModelSymbols) -> list[TransitionDef]:
         S, I = symbols.all_compartments
-        beta, mu = symbols.all_requirements
+        beta, mu, disease_death_rate = symbols.all_requirements
 
         N = Max(1, S + I)
 
@@ -79,6 +94,7 @@ class OffspringSI(CompartmentModel):
             # natural deaths from each compartment
             edge(S, DEATH, rate=mu * S),
             edge(I, DEATH, rate=mu * I),
+            edge(I, DEATH, rate=disease_death_rate * I)
         ]
 
 # ----------------------------------------
@@ -108,7 +124,7 @@ class AdultRaRc(CompartmentModel):
 # ---------------------------
 # Multi-strata model builder
 # ---------------------------
-class SIR_v3(MultiStrataRUMEBuilder):
+class SIR_v4(MultiStrataRUMEBuilder):
     def __init__(self):
         self.strata = [
             GPM(
@@ -130,7 +146,7 @@ class SIR_v3(MultiStrataRUMEBuilder):
 
         self.meta_requirements = [
             AttributeDef("mature_rate", type=float, shape=Shapes.TxN,
-                         comment="rate at which offspring mature into adults"),
+                         comment="end of season maturation"),
             AttributeDef("birth_rate", type=float, shape=Shapes.TxN,
                          comment="births per adult per day"),
             AttributeDef("p_vert", type=float, shape=Shapes.TxN,
@@ -156,48 +172,121 @@ class SIR_v3(MultiStrataRUMEBuilder):
         p_clear = 1 - p_chronic - p_disease_death
 
         return [
-            # Potential addition of biological assumption that Susceptible offspring 
-            # can metamorphose without becoming infected
-            
+            # --- End of Season: All S and I become their respective 
             # end of season become R_a
-
-            # edge(S, R_a, rate=mature_rate * S),
+            edge(S, R_a, rate=mature_rate * S),
 
             # --- I offspring maturation (three fates) ---
-            # fate 1: disease death on maturation
 
-            # end of season become R_c
-
-            edge(I, DEATH, rate=p_disease_death * mature_rate * I),
-
-            # fate 2: become chronic carrier adult
-            edge(I, R_c, rate=p_chronic * mature_rate * I),
-
-            # fate 3: clear infection on maturation, become cleared adult
-            edge(I, R_a, rate=p_clear * mature_rate * I),
+            # edit I -> R into fork structure
+            fork(
+                edge(I, R_c, rate = p_chronic * mature_rate * I),
+                edge(I, R_a, rate = (1 - p_chronic) * mature_rate * I)
+            ),
 
             # --- births driven by total adult population ---
             edge(BIRTH, S, rate=(1 - p_vert) * birth_rate * N_adult),
             edge(BIRTH, I, rate=p_vert * birth_rate * N_adult),
         ]
 
+# ---------------------------
+# Seasonal transmission beta
+# ---------------------------
+class SeasonalBeta(ParamFunctionTimeAndNode):
+    def evaluate1(self, day: int, node_index: int) -> float:
+        beta_active = 0.12
+        beta_off = 0.0
+
+        # modular for multi-year simulations
+        t_mod = day % 365
+
+        if season_start <= t_mod <= season_end:
+            return beta_active
+        else:
+            return beta_off
+        
+# ---------------
+# Seasonal births
+# ---------------
+class SeasonalBirths(ParamFunctionTimeAndNode):
+    def evaluate1(self, day: int, node_index: int) -> float:
+        birth_season = 1/30
+        birth_off = 0.0
+
+        t_mod = day % 365
+
+        if season_start <= t_mod <= season_start + 7:
+            return birth_season
+        else:
+            return birth_off
+        
+# ---------------
+# Seasonal deaths - assuming all juveniles become adults at the end of the season
+# ---------------
+class SeasonalDeaths(ParamFunctionTimeAndNode):
+    def evaluate1(self, day:int, node_index: int) -> float:
+        winter = 1 / 365        # only affects adults
+        summer = 1 / (365 * 3)  # affects adults and juveniles
+
+        t_mod = day % 365
+
+        if t_mod >= season_end or t_mod < season_start:
+            return winter
+        else:
+            return summer
+
+"""    
+# ------------------
+# Seasonal migration - Issue: the shape of commuter_proportion is Scalar not TxN
+# ------------------
+class SeasonalMigration(ParamFunctionTimeAndNode):
+    def evaluate1(self, day: int, nodE_index: int) -> float:
+        movement_on = 0.20
+        movement_off = 0.0
+
+        t_mod = day % 365
+
+        if season_start - 30 <= t_mod < season_start:
+            return movement_on
+        else:
+            return movement_off
+"""
+
+# Will uncomment this once I edit the maturation overall
+# -------------------
+# Seasonal maturation
+# -------------------
+class SeasonalMaturation(ParamFunctionTimeAndNode):
+    def evaluate1(self, day: int, node_index: int) -> float:
+        move_all = 1.0
+        season = 0.0
+
+        t_mod = day % 365
+
+        if t_mod == season_end:
+            return move_all
+        else:
+            return season
+
 # ---------------
 # Build the RUME
 # ---------------
-rume = SIR_v3().build(
+rume = SIR_v4().build(
     scope=scope,
     time_frame=time,
     params={
         # offspring IPM params
-        "gpm:offspring::ipm::beta": 0.30,                    # placeholder
-        "gpm:offspring::ipm::death_rate": 1 / (365 * 3),    # placeholder: 3yr lifespan
+            # class function incorporates seasonality
+        "gpm:offspring::ipm::beta": SeasonalBeta(),
+        "gpm:offspring::ipm::death_rate": SeasonalDeaths(),
+        "gpm:offspring::ipm::disease_death_rate": 0.5 / 183,
 
         # adult IPM params
-        "gpm:adult::ipm::death_rate": 1 / (365 * 3),
+        "gpm:adult::ipm::death_rate": SeasonalDeaths(),
 
         # meta params
-        "meta::ipm::mature_rate": 1 / 60,
-        "meta::ipm::birth_rate": 1 / 120,
+        "meta::ipm::mature_rate": SeasonalMaturation(),
+        "meta::ipm::birth_rate": SeasonalBirths(),
         "meta::ipm::p_vert": 0.60,
         "meta::ipm::p_chronic": 0.30,
         "meta::ipm::p_disease_death": 0.20,
@@ -253,6 +342,8 @@ plt.legend()
 plt.grid(alpha=0.3)
 plt.show()
 
+"""
 # view columns for diagnostic purposes
 for column in df_out.columns:
     print(f"\n{column}\n")
+"""
