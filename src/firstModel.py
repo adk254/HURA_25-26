@@ -24,6 +24,11 @@ from epymorph.kit import *  # noqa
 from pathlib import Path
 from sympy import Max
 
+# TODO rework maturation - end of season
+# fork I into dead/not dead, then EOS move all remaining I to R_c or R_a based on their infection status
+# make movement, beta, maturation, birth, winter death functions of time 
+#       use class system as seen in vignette 4 - time-variant beta
+
 # ----------------------
 # Load custom pond data
 # ----------------------
@@ -153,10 +158,16 @@ class SIR_v3(MultiStrataRUMEBuilder):
         return [
             # Potential addition of biological assumption that Susceptible offspring 
             # can metamorphose without becoming infected
+            
+            # end of season become R_a
+
             # edge(S, R_a, rate=mature_rate * S),
 
             # --- I offspring maturation (three fates) ---
             # fate 1: disease death on maturation
+
+            # end of season become R_c
+
             edge(I, DEATH, rate=p_disease_death * mature_rate * I),
 
             # fate 2: become chronic carrier adult
@@ -206,7 +217,7 @@ rume = SIR_v3().build(
 # ----------------------
 # Model diagram
 # ----------------------
-fig = rume.ipm.diagram()
+#fig = rume.ipm.diagram()
 
 # -----------------
 # Run a simulation
@@ -216,6 +227,31 @@ with sim_messaging(live=False):
     out = sim.run(rng_factory=default_rng(5))
 
 df_out = out.dataframe
+
+ponds = out.rume.scope.node_ids
+
+plt.figure(figsize=(12, 6))
+
+
+for pond in ponds:
+
+    pond_df = df_out[df_out["node"] == pond]
+    I_series = pond_df["I_offspring"].to_numpy()
+    ticks = pond_df["tick"].to_numpy()
+
+    plt.plot(ticks, I_series, label=pond)
+
+    if len(I_series) > 0:
+        peak_idx = int(np.argmax(I_series))
+        peak_tick = int(ticks[peak_idx])
+        peak_val = float(I_series[peak_idx])
+
+#plt.ylim(0, 60)
+plt.xlabel("Day")
+plt.ylabel("Number Infected (I)")
+plt.legend()
+plt.grid(alpha=0.3)
+plt.show()
 
 # view columns for diagnostic purposes
 for column in df_out.columns:
