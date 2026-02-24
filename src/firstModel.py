@@ -1,5 +1,5 @@
 # ------------------
-# Model Design v3
+# Model Design v4
 # ------------------
 # Offspring strata: S, I (no movement)
 # Adult strata:     R_a (cleared), R_c (chronic carrier) - movement between sites
