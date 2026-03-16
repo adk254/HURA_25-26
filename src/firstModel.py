@@ -40,6 +40,7 @@ test_data_path = current_dir / "data" / "basicTestData.csv"
 df = pd.read_csv(test_data_path)
 
 site_ids = df["site_id"].astype(str).tolist()
+
 scope = CustomScope(site_ids)
 
 # total_pop and adult_pop are static ints created initially.
@@ -53,6 +54,9 @@ time = TimeFrame.of("2020-01-01", duration_days=365)
 
 adult_frac = 0.40
 adult_pop = np.floor(total_pop * adult_frac).astype(int)
+
+# -------------------------
+# make changes to shift from seeding into offspring to seeding into adults - keep this for later when we do multi-year simulations and want to seed into offspring
 offspring_pop = (total_pop - adult_pop).astype(int)
 
 # -------------------------
@@ -60,8 +64,8 @@ offspring_pop = (total_pop - adult_pop).astype(int)
 # -------------------------
 
 # season start and end variables
-season_start = 105 # April 15
-season_end = 288 # October 15
+season_start = 135 # May 15
+season_end = 258 # September 15
 
 # --------------------------------
 # Offspring IPM: S, I + deaths
@@ -131,16 +135,22 @@ class SIR_v4(MultiStrataRUMEBuilder):
                 name="offspring",
                 ipm=OffspringSI(),
                 mm=mm.No(),  # offspring cannot move between sites
-                init=init.SingleLocation(
-                    location=seed_location_index,
-                    seed_size=seed_size
-                ),
+                init=init.NoInfection(),
+                
             ),
             GPM(
                 name="adult",
                 ipm=AdultRaRc(),
-                mm=mm.Flat(),  # adults move between sites
-                init=init.NoInfection(initial_compartment="R_a"),
+                mm=mm.No(),  # adults move between sites
+
+                init=init.SingleLocation(
+                    # initial compartment is what you dont want to seed
+                    initial_compartment="R_a",
+                    # infection compartment is where you DO want to seed
+                    infection_compartment="R_c",
+                    location=seed_location_index,
+                    seed_size=seed_size,
+                ),
             ),
         ]
 
@@ -164,29 +174,31 @@ class SIR_v4(MultiStrataRUMEBuilder):
         mature_rate, birth_rate, p_vert, p_chronic, p_disease_death = symbols.all_meta_requirements
 
         # total adult population drives births
-        N_adult = Max(1, R_a + R_c)
+        #N_adult = Max(1, R_a + R_c)
 
         # p_clear is the remaining fraction after disease death and chronic carrier
         # these three probabilities must sum to 1:
         #   p_disease_death + p_chronic + p_clear = 1
-        p_clear = 1 - p_chronic - p_disease_death
+        #p_clear = 1 - p_chronic - p_disease_death
 
         return [
             # --- End of Season: All S and I become their respective 
             # end of season become R_a
             edge(S, R_a, rate=mature_rate * S),
 
-            # --- I offspring maturation (three fates) ---
-
-            # edit I -> R into fork structure
+            # I -> R into fork structure
+            # TODO: fix the mature_rate because right now it isnt working the way I intended - just need all to move on one day rather than 1.0 or 0.0 being apart of the rates *might not be true
             fork(
-                edge(I, R_c, rate = p_chronic * mature_rate * I),
-                edge(I, R_a, rate = (1 - p_chronic) * mature_rate * I)
+                edge(I, DEATH, rate = p_disease_death * mature_rate * I),
+                edge(I, R_c, rate = p_chronic * mature_rate *I),
+                edge(I, R_a, rate = (1 - p_chronic) * mature_rate * I),
             ),
 
-            # --- births driven by total adult population ---
-            edge(BIRTH, S, rate=(1 - p_vert) * birth_rate * N_adult),
-            edge(BIRTH, I, rate=p_vert * birth_rate * N_adult),
+            # Susceptible births: all R_a births are susceptible, and (1-p_vert) of R_c births are susceptible
+            edge(BIRTH, S, rate=birth_rate * (R_a + ((1 - p_vert) * R_c))),
+
+            # Infected births: only p_vert fraction of R_c births
+            edge(BIRTH, I, rate=birth_rate * (p_vert * R_c)),
         ]
 
 # ---------------------------
@@ -252,7 +264,6 @@ class SeasonalMigration(ParamFunctionTimeAndNode):
             return movement_off
 """
 
-# Will uncomment this once I edit the maturation overall
 # -------------------
 # Seasonal maturation
 # -------------------
@@ -263,7 +274,7 @@ class SeasonalMaturation(ParamFunctionTimeAndNode):
 
         t_mod = day % 365
 
-        if t_mod == season_end:
+        if t_mod >= season_end - 1 and t_mod <= season_end + 1:
             return move_all
         else:
             return season
@@ -279,7 +290,7 @@ rume = SIR_v4().build(
             # class function incorporates seasonality
         "gpm:offspring::ipm::beta": SeasonalBeta(),
         "gpm:offspring::ipm::death_rate": SeasonalDeaths(),
-        "gpm:offspring::ipm::disease_death_rate": 0.5 / 183,
+        "gpm:offspring::ipm::disease_death_rate": 1 / 365,
 
         # adult IPM params
         "gpm:adult::ipm::death_rate": SeasonalDeaths(),
@@ -287,14 +298,12 @@ rume = SIR_v4().build(
         # meta params
         "meta::ipm::mature_rate": SeasonalMaturation(),
         "meta::ipm::birth_rate": SeasonalBirths(),
-        "meta::ipm::p_vert": 0.60,
-        "meta::ipm::p_chronic": 0.30,
+        "meta::ipm::p_vert": 0.40,
+        "meta::ipm::p_chronic": 0.5,
         "meta::ipm::p_disease_death": 0.20,
-        # note: p_clear = 1 - p_chronic - p_disease_death = 0.50 (implicit)
 
         # populations per strata
-        "gpm:offspring::mm::population": offspring_pop.tolist(),
-        "gpm:offspring::init::population": offspring_pop.tolist(),
+        "gpm:offspring::init::population": 0,#offspring_pop.tolist(), # potentially do ParamFunctionTxN here so first year is at 0 then other years are dynamic
         "gpm:adult::mm::population": adult_pop.tolist(),
         "gpm:adult::init::population": adult_pop.tolist(),
 
@@ -302,6 +311,25 @@ rume = SIR_v4().build(
         "gpm:adult::mm::commuter_proportion": 0.20,
     },
 )
+
+"""
+# View the transmission rates over time
+beta_values = (
+    SeasonalMaturation()
+    .with_context(
+        scope=rume.scope,
+        time_frame=rume.time_frame,
+    )
+    .evaluate()
+)
+
+### GRAPH ###
+fig, ax = plt.subplots()
+ax.plot(beta_values)
+ax.set(title="beta function", ylabel="beta", xlabel="days")
+fig.tight_layout()
+plt.show()
+"""
 
 # ----------------------
 # Model diagram
@@ -321,26 +349,36 @@ ponds = out.rume.scope.node_ids
 
 plt.figure(figsize=(12, 6))
 
-
 for pond in ponds:
 
     pond_df = df_out[df_out["node"] == pond]
-    I_series = pond_df["I_offspring"].to_numpy()
+
     ticks = pond_df["tick"].to_numpy()
 
-    plt.plot(ticks, I_series, label=pond)
+    S_series = pond_df["S_offspring"].to_numpy()
+    I_series = pond_df["I_offspring"].to_numpy()
+    Ra_series = pond_df["R_a_adult"].to_numpy()
+    Rc_series = pond_df["R_c_adult"].to_numpy()
 
-    if len(I_series) > 0:
-        peak_idx = int(np.argmax(I_series))
-        peak_tick = int(ticks[peak_idx])
-        peak_val = float(I_series[peak_idx])
+    plt.plot(ticks, S_series, label=f"{pond} - S")
+    plt.plot(ticks, I_series, label=f"{pond} - I")
+    plt.plot(ticks, Ra_series, linestyle="--", label=f"{pond} - R_a")
+    plt.plot(ticks, Rc_series, linestyle=":", label=f"{pond} - R_c")
 
-#plt.ylim(0, 60)
 plt.xlabel("Day")
-plt.ylabel("Number Infected (I)")
+plt.ylabel("Population")
 plt.legend()
 plt.grid(alpha=0.3)
 plt.show()
+
+# View total offspring and adults across all ponds to check maturation works correctly
+    # should see all offspring become adults at the end of the season (day 258)
+tot_offspring = df_out.groupby("tick")[["S_offspring","I_offspring"]].sum()
+print(tot_offspring.loc[254:258])
+tot_adults = df_out.groupby("tick")[["R_a_adult","R_c_adult"]].sum()
+print(tot_adults.loc[254:259])
+
+print(df_out.groupby("tick")[["S_offspring","I_offspring"]].sum().loc[250:260])
 
 """
 # view columns for diagnostic purposes
