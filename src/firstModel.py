@@ -1,5 +1,5 @@
 # ------------------
-# Model Design v4
+# Model Design v5
 # ------------------
 # Offspring strata: S, I (no movement)
 # Adult strata:     R_a (cleared), R_c (chronic carrier) - movement between sites
@@ -23,14 +23,49 @@ import numpy as np
 from epymorph.kit import *  # noqa
 from pathlib import Path
 from sympy import Max
+import certifi
+import os
+os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
+os.environ["SSL_CERT_FILE"] = certifi.where()
 
-# TODO rework maturation - end of season
-# fork I into dead/not dead, then EOS move all remaining I to R_c or R_a based on their infection status
-# make movement, beta, maturation, birth, winter death functions of time 
-#       use class system as seen in vignette 4 - time-variant beta
+from datetime import date
+from epymorph.kit import *
+from epymorph.adrio import acs5, us_tiger, prism as prism_adrio
 
-# breeding occurs at the beginning of the season
-# migration occurs before the season
+#----------------------------------
+# Load temperature and precipitation
+#-----------------------------------
+
+coconino_scope = CountyScope.in_counties(["04005"], year=2020)
+temp_time_frame = TimeFrame.range(date(2020, 1, 1), date(2020, 12, 31))
+mean_temp_adrio = prism_adrio.Temperature("Mean")
+
+with sim_messaging(live=False):
+    temperature_data = mean_temp_adrio.with_context(
+        scope=coconino_scope,
+        time_frame=temp_time_frame,
+        params={"centroid": us_tiger.GeometricCentroid()},
+    ).evaluate()
+
+daily_temps = temperature_data[:, 0]
+
+precip_adrio = prism_adrio.Precipitation()
+
+with sim_messaging(live=False):
+    temperature_data = mean_temp_adrio.with_context(
+        scope=coconino_scope,
+        time_frame=temp_time_frame,
+        params={"centroid": us_tiger.GeometricCentroid()},
+    ).evaluate()
+    
+    precip_data = precip_adrio.with_context(
+        scope=coconino_scope,
+        time_frame=temp_time_frame,
+        params={"centroid": us_tiger.GeometricCentroid()},
+    ).evaluate()
+
+daily_temps = temperature_data[:, 0]
+daily_precip = precip_data[:, 0]  # mm per day
 
 # ----------------------
 # Load custom pond data
@@ -58,6 +93,12 @@ adult_pop = np.floor(total_pop * adult_frac).astype(int)
 # -------------------------
 # make changes to shift from seeding into offspring to seeding into adults - keep this for later when we do multi-year simulations and want to seed into offspring
 offspring_pop = (total_pop - adult_pop).astype(int)
+
+#---------------------------------------------------
+# Compute distance matrix for movement between ponds
+#---------------------------------------------------
+
+# TODO
 
 # -------------------------
 # Variables for Seasonality
@@ -141,7 +182,7 @@ class SIR_v4(MultiStrataRUMEBuilder):
             GPM(
                 name="adult",
                 ipm=AdultRaRc(),
-                mm=mm.No(),  # adults move between sites
+                mm=mm.Flat(),  # adults move between sites
 
                 init=init.SingleLocation(
                     # initial compartment is what you dont want to seed
@@ -187,7 +228,6 @@ class SIR_v4(MultiStrataRUMEBuilder):
             edge(S, R_a, rate=mature_rate * S),
 
             # I -> R into fork structure
-            # TODO: fix the mature_rate because right now it isnt working the way I intended - just need all to move on one day rather than 1.0 or 0.0 being apart of the rates *might not be true
             fork(
                 edge(I, DEATH, rate = p_disease_death * mature_rate * I),
                 edge(I, R_c, rate = p_chronic * mature_rate *I),
@@ -205,17 +245,30 @@ class SIR_v4(MultiStrataRUMEBuilder):
 # Seasonal transmission beta
 # ---------------------------
 class SeasonalBeta(ParamFunctionTimeAndNode):
+    def __init__(self, temps: np.ndarray):
+        self.temps = temps
+
     def evaluate1(self, day: int, node_index: int) -> float:
-        beta_active = 0.12
+        beta_max = 0.12
         beta_off = 0.0
 
-        # modular for multi-year simulations
         t_mod = day % 365
 
-        if season_start <= t_mod <= season_end:
-            return beta_active
-        else:
+        if not (season_start <= t_mod <= season_end):
             return beta_off
+
+        temp = self.temps[t_mod]
+
+        # Gaussian peaked at 22°C
+        # sigma controls how quickly beta drops off on either side
+        # sigma=5 means at 17°C or 27°C (5 degrees away), beta is ~61% of max
+        # sigma=3 means beta drops off more steeply
+        optimal_temp = 22.0
+        sigma = 5.0
+
+        beta_scaled = beta_max * np.exp(-((temp - optimal_temp) ** 2) / (2 * sigma ** 2))
+
+        return beta_scaled
         
 # ---------------
 # Seasonal births
@@ -288,7 +341,7 @@ rume = SIR_v4().build(
     params={
         # offspring IPM params
             # class function incorporates seasonality
-        "gpm:offspring::ipm::beta": SeasonalBeta(),
+        "gpm:offspring::ipm::beta": SeasonalBeta(daily_temps),
         "gpm:offspring::ipm::death_rate": SeasonalDeaths(),
         "gpm:offspring::ipm::disease_death_rate": 1 / 365,
 
@@ -312,10 +365,10 @@ rume = SIR_v4().build(
     },
 )
 
-"""
+
 # View the transmission rates over time
 beta_values = (
-    SeasonalMaturation()
+    SeasonalBeta(daily_temps)
     .with_context(
         scope=rume.scope,
         time_frame=rume.time_frame,
@@ -329,8 +382,9 @@ ax.plot(beta_values)
 ax.set(title="beta function", ylabel="beta", xlabel="days")
 fig.tight_layout()
 plt.show()
-"""
 
+# TODO: add in more diagnostics - view total population over time, view total births/deaths, view population by strata, etc. to check that the model is working as expected
+# TODO: make figure with 3 subplots - one for each pond, with lines for each strata in the subplot
 # ----------------------
 # Model diagram
 # ----------------------
@@ -347,28 +401,25 @@ df_out = out.dataframe
 
 ponds = out.rume.scope.node_ids
 
-plt.figure(figsize=(12, 6))
+fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
 
-for pond in ponds:
-
+for ax, pond in zip(axes, ponds):
     pond_df = df_out[df_out["node"] == pond]
-
     ticks = pond_df["tick"].to_numpy()
 
-    S_series = pond_df["S_offspring"].to_numpy()
-    I_series = pond_df["I_offspring"].to_numpy()
-    Ra_series = pond_df["R_a_adult"].to_numpy()
-    Rc_series = pond_df["R_c_adult"].to_numpy()
+    ax.plot(ticks, pond_df["S_offspring"].to_numpy(), label="S (offspring)", color="steelblue")
+    ax.plot(ticks, pond_df["I_offspring"].to_numpy(), label="I (offspring)", color="firebrick")
+    ax.plot(ticks, pond_df["R_a_adult"].to_numpy(), label="R_a (adult)", linestyle="--", color="seagreen")
+    ax.plot(ticks, pond_df["R_c_adult"].to_numpy(), label="R_c (adult)", linestyle=":", color="darkorange")
 
-    plt.plot(ticks, S_series, label=f"{pond} - S")
-    plt.plot(ticks, I_series, label=f"{pond} - I")
-    plt.plot(ticks, Ra_series, linestyle="--", label=f"{pond} - R_a")
-    plt.plot(ticks, Rc_series, linestyle=":", label=f"{pond} - R_c")
+    ax.set_title(f"Pond {pond}")
+    ax.set_ylabel("Population")
+    ax.legend(loc="upper right")
+    ax.grid(alpha=0.3)
 
-plt.xlabel("Day")
-plt.ylabel("Population")
-plt.legend()
-plt.grid(alpha=0.3)
+axes[-1].set_xlabel("Day")
+plt.suptitle("Salamander Population Dynamics by Pond", fontsize=14)
+plt.tight_layout()
 plt.show()
 
 # View total offspring and adults across all ponds to check maturation works correctly
