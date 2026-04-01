@@ -1,5 +1,5 @@
 # ------------------
-# Model Design v5
+# Model Design v5 - legacy code for reference as we build out the new model structure in firstModel.ipynb
 # ------------------
 # Offspring strata: S, I (no movement)
 # Adult strata:     R_a (cleared), R_c (chronic carrier) - movement between sites
@@ -32,7 +32,7 @@ from datetime import date
 from epymorph.kit import *
 from epymorph.adrio import acs5, us_tiger, prism as prism_adrio
 
-#----------------------------------
+#-----------------------------------
 # Load temperature and precipitation
 #-----------------------------------
 
@@ -97,8 +97,6 @@ offspring_pop = (total_pop - adult_pop).astype(int)
 #---------------------------------------------------
 # Compute distance matrix for movement between ponds
 #---------------------------------------------------
-
-# TODO
 
 # -------------------------
 # Variables for Seasonality
