@@ -36,3 +36,5 @@ print(f"\nTemperature in Celsius (first 10 days):\n{temperature[:10]}")
 print(f"Min: {temperature.min():.1f}°C, Max: {temperature.max():.1f}°C")
 print(f"\nPrecipitation in mm (first 10 days):\n{precipitation[:10]}")
 print(f"Min: {precipitation.min():.1f}mm, Max: {precipitation.max():.1f}mm")
+
+print(f"\nPrecipitation data: {precipitation}")
